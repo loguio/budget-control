@@ -20,9 +20,9 @@ import axios, { AxiosInstance } from 'axios';
 // ============================================================
 
 // Environment variables
-const BRIDGE_CLIENT_ID = process.env.BRIDGE_CLIENT_ID || '';
-const BRIDGE_CLIENT_SECRET = process.env.BRIDGE_CLIENT_SECRET || '';
-const BRIDGE_API_URL = process.env.BRIDGE_API_URL || 'https://api.bridgeapi.io';
+const BRIDGE_CLIENT_ID = process.env.EXPO_PUBLIC_BRIDGE_CLIENT_ID || '';
+const BRIDGE_CLIENT_SECRET = process.env.EXPO_PUBLIC_BRIDGE_CLIENT_SECRET || '';
+const BRIDGE_API_URL = process.env.EXPO_PUBLIC_BRIDGE_API_URL || 'https://api.bridgeapi.io';
 
 // --- Types v3 ---
 
