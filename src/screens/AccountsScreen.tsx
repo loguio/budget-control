@@ -52,8 +52,10 @@ export default function AccountsScreen() {
     }
 
     setSyncing(true);
-    // In production, you'd prompt for Bridge credentials
-    const result = await syncBankData('user@example.com', 'password');
+    // v3: Auth uses user_uuid. In production, store this UUID after createUser().
+    // For now, use the UUID from the Bridge dashboard or call initBridgeUser() first.
+    const userUuid = bridgeApi.getCurrentUserUuid() || 'YOUR_BRIDGE_USER_UUID';
+    const result = await syncBankData(userUuid);
     setSyncing(false);
 
     if (result.success) {

@@ -1,9 +1,14 @@
 import { bridgeApi } from './bridgeApi';
-import { upsertAccount, insertTransaction, updateBudgetSpent, getAccounts } from '../database/db';
+import { upsertAccount, insertTransaction, updateBudgetSpent } from '../database/db';
 import type { BridgeAccount, BridgeTransaction } from './bridgeApi';
 
 // ============================================================
-// Sync Service — Orchestrates data sync from Bridge API
+// Sync Service v3 — Orchestrates data sync from Bridge API
+// ============================================================
+// v3 changes:
+//   - Auth uses user_uuid (no email/password)
+//   - Provider replaces Bank
+//   - Transactions: use minDate/maxDate instead of /updated
 // ============================================================
 
 function uuid(): string {
@@ -21,7 +26,12 @@ export interface SyncResult {
   error?: string;
 }
 
-export async function syncBankData(email: string, password: string): Promise<SyncResult> {
+/**
+ * Sync bank data from Bridge API v3.
+ *
+ * @param userUuid - The Bridge user UUID (obtained after createUser)
+ */
+export async function syncBankData(userUuid: string): Promise<SyncResult> {
   try {
     // Check if API is configured
     if (!bridgeApi.isConfigured()) {
@@ -33,9 +43,9 @@ export async function syncBankData(email: string, password: string): Promise<Syn
       };
     }
 
-    // Authenticate if needed
+    // Authenticate with user UUID (v3 flow)
     if (!bridgeApi.isTokenValid()) {
-      await bridgeApi.authenticate(email, password);
+      await bridgeApi.authenticate({ userUuid });
     }
 
     // Fetch accounts
@@ -44,26 +54,27 @@ export async function syncBankData(email: string, password: string): Promise<Syn
     let transactionsSynced = 0;
 
     for (const account of bridgeAccounts) {
-      // Save account
+      // Save account — v3: provider instead of bank
       await upsertAccount({
         id: `bridge-${account.id}`,
         name: account.name,
         type: bridgeApi.mapAccountType(account.type),
         balance: account.balance,
-        bankName: account.bank?.name || 'BNP Paribas',
+        bankName: account.provider?.name || 'BNP Paribas',
         iban: account.iban,
         lastSync: new Date().toISOString(),
         bridgeId: account.id,
       });
       accountsSynced++;
 
-      // Fetch transactions for this account (last 90 days)
+      // Fetch transactions (last 90 days)
+      // v3: use minDate/maxDate instead of /transactions/updated
       const since = new Date();
       since.setDate(since.getDate() - 90);
 
       const transactions = await bridgeApi.getTransactions({
         accountId: account.id,
-        since: since.toISOString().split('T')[0],
+        minDate: since.toISOString().split('T')[0],
       });
 
       for (const tx of transactions) {
@@ -75,7 +86,7 @@ export async function syncBankData(email: string, password: string): Promise<Syn
           category: bridgeApi.mapCategory(tx.category),
           date: tx.date,
           type: tx.amount < 0 ? 'debit' : 'credit',
-          isRecurring: false, // Could be improved with pattern detection
+          isRecurring: false,
           bridgeId: tx.id,
         });
         transactionsSynced++;
@@ -97,8 +108,23 @@ export async function syncBankData(email: string, password: string): Promise<Syn
   }
 }
 
-// --- Auto-detect recurring transactions ---
-export async function detectRecurringTransactions(): Promise<void> {
-  // This would analyze transaction patterns to detect subscriptions
-  // For now, we use the isRecurring flag set during import
+/**
+ * Initialize a new Bridge user and return the uuid.
+ * Call this once per app user, then store the UUID locally.
+ */
+export async function initBridgeUser(externalId?: string): Promise<string> {
+  const user = await bridgeApi.createUser(externalId);
+  return user.uuid;
+}
+
+/**
+ * Get a Connect session URL for the user to link their BNP account.
+ * Open this URL in a WebView or browser.
+ */
+export async function getBankConnectUrl(options?: {
+  accountTypes?: 'payment' | 'all';
+}): Promise<string> {
+  return bridgeApi.createConnectSession({
+    accountTypes: options?.accountTypes || 'all',
+  });
 }
