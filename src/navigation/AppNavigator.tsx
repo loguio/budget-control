@@ -9,6 +9,7 @@ import AccountsScreen from '../screens/AccountsScreen';
 import BudgetsScreen from '../screens/BudgetsScreen';
 import CalendarScreen from '../screens/CalendarScreen';
 import GoalsScreen from '../screens/GoalsScreen';
+import SyncDebugScreen from '../screens/SyncDebugScreen';
 
 const Tab = createBottomTabNavigator();
 
@@ -19,6 +20,7 @@ function TabIcon({ name, focused }: { name: string; focused: boolean }) {
     'Budgets': '💰',
     'Calendrier': '📅',
     'Objectifs': '🎯',
+    'Debug': '🐛',
   };
 
   return (
@@ -51,6 +53,7 @@ export default function AppNavigator() {
         <Tab.Screen name="Budgets" component={BudgetsScreen} />
         <Tab.Screen name="Calendrier" component={CalendarScreen} />
         <Tab.Screen name="Objectifs" component={GoalsScreen} />
+        <Tab.Screen name="Debug" component={SyncDebugScreen} />
       </Tab.Navigator>
     </NavigationContainer>
   );

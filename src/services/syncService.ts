@@ -24,6 +24,11 @@ export interface SyncResult {
   accountsSynced: number;
   transactionsSynced: number;
   error?: string;
+  action?: {
+    type: 'connect';
+    itemId?: number;
+    forceReauthentication?: boolean;
+  };
 }
 
 /**
@@ -42,14 +47,49 @@ export async function syncBankData(userUuid: string): Promise<SyncResult> {
         error: 'Bridge API non configurée. Ajoutez vos clés dans le fichier .env',
       };
     }
-
+    console.log('syncBankData', bridgeApi.isTokenValid() );
     // Authenticate with user UUID (v3 flow)
     if (!bridgeApi.isTokenValid()) {
       await bridgeApi.authenticate({ userUuid });
     }
+    console.log(await bridgeApi.getItems({ limit: 500 }));
+    // Fetch items first (connections), then accounts.
+    const items = await bridgeApi.getItems({ limit: 500 });
+    if (!items || items.length === 0) {
+      return {
+        success: false,
+        accountsSynced: 0,
+        transactionsSynced: 0,
+        error: "Aucune connexion bancaire (item) trouvée. Connectez d'abord votre banque via Bridge, puis réessayez.",
+        action: { type: 'connect' },
+      };
+    }
 
-    // Fetch accounts
-    const bridgeAccounts = await bridgeApi.getAccounts();
+    // A "healthy" item typically has status 0 / ok (see Bridge docs).
+    const unhealthy = items.find((it) => it.status !== 0);
+    if (unhealthy) {
+      return {
+        success: false,
+        accountsSynced: 0,
+        transactionsSynced: 0,
+        error:
+          unhealthy.status_code_description ||
+          `Connexion bancaire incomplète (${unhealthy.status_code_info || unhealthy.status}). Ouvrez Bridge pour finaliser.`,
+        action: { type: 'connect', itemId: unhealthy.id, forceReauthentication: true },
+      };
+    }
+
+    // Fetch accounts (all pages)
+    const bridgeAccounts = await bridgeApi.getAccounts({ limit: 500 });
+    if (!bridgeAccounts || bridgeAccounts.length === 0) {
+      return {
+        success: false,
+        accountsSynced: 0,
+        transactionsSynced: 0,
+        error: "Aucun compte trouvé. Ouvrez Bridge pour connecter/autoriser vos comptes, puis réessayez.",
+        action: { type: 'connect' },
+      };
+    }
     let accountsSynced = 0;
     let transactionsSynced = 0;
 
@@ -78,12 +118,18 @@ export async function syncBankData(userUuid: string): Promise<SyncResult> {
       });
 
       for (const tx of transactions) {
+        const description =
+          (tx as any).description ||
+          (tx as any).clean_description ||
+          (tx as any).raw_description ||
+          (tx as any).provider_description ||
+          '';
         await insertTransaction({
           id: `bridge-tx-${tx.id}`,
           accountId: `bridge-${account.id}`,
           amount: tx.amount,
-          description: tx.description || tx.raw_description,
-          category: bridgeApi.mapCategory(tx.category),
+          description,
+          category: tx.category ? bridgeApi.mapCategory(tx.category) : 'Autre',
           date: tx.date,
           type: tx.amount < 0 ? 'debit' : 'credit',
           isRecurring: false,
@@ -113,6 +159,7 @@ export async function syncBankData(userUuid: string): Promise<SyncResult> {
  * Call this once per app user, then store the UUID locally.
  */
 export async function initBridgeUser(externalId?: string): Promise<string> {
+  console.log('initBridgeUser', externalId);
   const user = await bridgeApi.createUser(externalId);
   return user.uuid;
 }
@@ -122,9 +169,19 @@ export async function initBridgeUser(externalId?: string): Promise<string> {
  * Open this URL in a WebView or browser.
  */
 export async function getBankConnectUrl(options?: {
+  userUuid?: string;
+  itemId?: number;
+  forceReauthentication?: boolean;
   accountTypes?: 'payment' | 'all';
 }): Promise<string> {
+  const userUuid = options?.userUuid || bridgeApi.getCurrentUserUuid();
+  const safeId = (userUuid || 'user').replace(/[^a-zA-Z0-9]/g, '').slice(0, 32) || 'user';
+  const userEmail = `${safeId}@budget-control.app`;
+
   return bridgeApi.createConnectSession({
+    userEmail,
     accountTypes: options?.accountTypes || 'all',
+    itemId: options?.itemId,
+    forceReauthentication: options?.forceReauthentication,
   });
 }

@@ -1,13 +1,14 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView,
-  RefreshControl, TouchableOpacity, Alert,
+  RefreshControl, TouchableOpacity, Linking,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { Colors, Typography, Spacing, BorderRadius } from '../theme';
 import { getAccounts, getTransactions } from '../database/db';
 import { bridgeApi } from '../services/bridgeApi';
-import { syncBankData } from '../services/syncService';
+import { getBankConnectUrl, initBridgeUser, syncBankData } from '../services/syncService';
+import { getStoredBridgeUserUuid, setStoredBridgeUserUuid } from '../services/bridgeUserStore';
 import AccountCard from '../components/AccountCard';
 import TransactionItem from '../components/TransactionItem';
 
@@ -30,6 +31,10 @@ export default function AccountsScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      (async () => {
+        const stored = await getStoredBridgeUserUuid();
+        if (stored) bridgeApi.setCurrentUserUuid(stored);
+      })();
       loadData();
     }, [loadData])
   );
@@ -42,27 +47,72 @@ export default function AccountsScreen() {
 
   const handleSync = async () => {
     if (!bridgeApi.isConfigured()) {
-      Alert.alert(
-        'Configuration requise',
-        'Pour synchroniser vos comptes BNP Paribas, ajoutez vos identifiants Bridge API dans le fichier .env\n\n' +
-        'BRIDGE_CLIENT_ID=votre_id\nBRIDGE_CLIENT_SECRET=votre_secret',
-        [{ text: 'Compris' }]
+      console.warn(
+        '[Accounts/Sync] Configuration Bridge manquante. Ajoutez dans .env :\n' +
+          'EXPO_PUBLIC_BRIDGE_CLIENT_ID=…\n' +
+          'EXPO_PUBLIC_BRIDGE_CLIENT_SECRET=…\n' +
+          'EXPO_PUBLIC_BRIDGE_API_URL=https://api.bridgeapi.io/v3'
       );
       return;
     }
-
     setSyncing(true);
-    // v3: Auth uses user_uuid. In production, store this UUID after createUser().
-    // For now, use the UUID from the Bridge dashboard or call initBridgeUser() first.
-    const userUuid = bridgeApi.getCurrentUserUuid() || 'YOUR_BRIDGE_USER_UUID';
+    // v3: Auth uses user_uuid. If the user has not linked a bank yet,
+    // create a Bridge user and open a Connect session so they can add BNP.
+    let userUuid = bridgeApi.getCurrentUserUuid();
+    if (!userUuid) {
+      try {
+        userUuid = await initBridgeUser();
+        await setStoredBridgeUserUuid(userUuid);
+        bridgeApi.setCurrentUserUuid(userUuid);
+        await bridgeApi.authenticate({ userUuid });
+        const connectUrl = await getBankConnectUrl({ userUuid });
+        setSyncing(false);
+        console.log(
+          '[Accounts/Sync] Première connexion — ouverture Bridge Connect. Puis relancez Synchroniser.',
+          connectUrl
+        );
+        await Linking.openURL(connectUrl);
+        return;
+      } catch (e: any) {
+        setSyncing(false);
+        console.error('[Accounts/Sync] Init Bridge / Connect:', e?.message ?? e, e);
+        return;
+      }
+    }
+
     const result = await syncBankData(userUuid);
     setSyncing(false);
 
     if (result.success) {
-      Alert.alert('Synchronisation réussie', `${result.accountsSynced} compte(s), ${result.transactionsSynced} transaction(s) synchronisée(s).`);
+      console.log('[Accounts/Sync] OK', {
+        accountsSynced: result.accountsSynced,
+        transactionsSynced: result.transactionsSynced,
+      });
       await loadData();
     } else {
-      Alert.alert('Erreur de synchronisation', result.error || 'Erreur inconnue');
+      // If Bridge indicates we must (re)connect, behave like first sync: open Bridge Connect.
+      if (result.action?.type === 'connect') {
+        try {
+          if (!bridgeApi.isTokenValid()) {
+            await bridgeApi.authenticate({ userUuid });
+          }
+          const connectUrl = await getBankConnectUrl({
+            userUuid,
+            itemId: result.action.itemId,
+            forceReauthentication: result.action.forceReauthentication,
+          });
+          console.warn(
+            '[Accounts/Sync] Connexion / SCA requise — ouverture Bridge. Puis relancez Synchroniser.',
+            { itemId: result.action.itemId, url: connectUrl }
+          );
+          await Linking.openURL(connectUrl);
+          return;
+        } catch (e: any) {
+          console.error('[Accounts/Sync] Connect session:', e?.message ?? e, e);
+          return;
+        }
+      }
+      console.error('[Accounts/Sync]', result.error || 'Erreur inconnue');
     }
   };
 

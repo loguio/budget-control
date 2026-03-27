@@ -1,4 +1,66 @@
-import axios, { AxiosInstance } from 'axios';
+import axios, { AxiosError, AxiosInstance, AxiosResponse } from 'axios';
+
+declare module 'axios' {
+  export interface AxiosRequestConfig {
+    /** Identifiant lisible pour tracer l’appel dans bridgeApi.ts (méthode / flux). */
+    bridgeOperation?: string;
+  }
+}
+
+/** Erreur Bridge : message exploitable + lien vers l’opération dans notre code. */
+export class BridgeApiError extends Error {
+  readonly operation: string;
+  readonly httpMethod: string;
+  readonly requestUrl: string;
+  readonly status: number | null;
+  readonly responseBody: unknown;
+
+  constructor(params: {
+    operation: string;
+    message: string;
+    httpMethod: string;
+    requestUrl: string;
+    status: number | null;
+    responseBody: unknown;
+  }) {
+    super(params.message);
+    this.name = 'BridgeApiError';
+    this.operation = params.operation;
+    this.httpMethod = params.httpMethod;
+    this.requestUrl = params.requestUrl;
+    this.status = params.status;
+    this.responseBody = params.responseBody;
+    Object.setPrototypeOf(this, BridgeApiError.prototype);
+  }
+}
+
+function buildBridgeErrorFromAxios(operation: string, error: AxiosError): BridgeApiError {
+  const cfg = error.config;
+  const method = (cfg?.method || 'GET').toUpperCase();
+  const path = cfg?.url || '';
+  const base = cfg?.baseURL || '';
+  const fullUrl = path.startsWith('http') ? path : `${base}${path}`;
+  const status = error.response?.status ?? null;
+  const data = error.response?.data;
+  let detail = '';
+  if (data !== undefined) {
+    detail = typeof data === 'string' ? data : JSON.stringify(data);
+  } else if (error.message) {
+    detail = error.message;
+  }
+  if (detail.length > 800) detail = `${detail.slice(0, 800)}…`;
+
+  const msg = `[bridgeApi.ts → ${operation}] ${method} ${fullUrl} → ${status ?? 'réseau'}${detail ? `: ${detail}` : ''}`;
+
+  return new BridgeApiError({
+    operation,
+    message: msg,
+    httpMethod: method,
+    requestUrl: fullUrl,
+    status,
+    responseBody: data,
+  });
+}
 
 // ============================================================
 // Bridge API v3 Service — Open Banking Integration (BNP Paribas)
@@ -22,7 +84,49 @@ import axios, { AxiosInstance } from 'axios';
 // Environment variables
 const BRIDGE_CLIENT_ID = process.env.EXPO_PUBLIC_BRIDGE_CLIENT_ID || '';
 const BRIDGE_CLIENT_SECRET = process.env.EXPO_PUBLIC_BRIDGE_CLIENT_SECRET || '';
-const BRIDGE_API_URL = process.env.EXPO_PUBLIC_BRIDGE_API_URL || 'https://api.bridgeapi.io';
+const BRIDGE_API_URL_RAW = process.env.EXPO_PUBLIC_BRIDGE_API_URL || 'https://api.bridgeapi.io';
+
+function normalizeBridgeBaseUrl(raw: string): string {
+  const trimmed = (raw || '').trim().replace(/\/+$/, '');
+  // Desired base for this app is ALWAYS Bridge v3 aggregation root:
+  //   https://api.bridgeapi.io/v3/aggregation
+  //
+  // Accept common inputs and normalize:
+  // - https://api.bridgeapi.io
+  // - https://api.bridgeapi.io/v2
+  // - https://api.bridgeapi.io/v3
+  // - https://api.bridgeapi.io/v3/aggregation
+  const root = trimmed.replace(/\/v\d+(\/aggregation)?$/i, '');
+  return `${root || 'https://api.bridgeapi.io'}/v3/aggregation`;
+}
+
+const BRIDGE_API_URL = normalizeBridgeBaseUrl(BRIDGE_API_URL_RAW);
+
+const AGGREGATION_PATH_PREFIX = '/v3/aggregation';
+
+/**
+ * Bridge renvoie `pagination.next_uri` en path absolu (`/v3/aggregation/transactions?…`).
+ * Notre client axios a déjà `baseURL` = `…/v3/aggregation`, donc il faut retirer ce préfixe
+ * pour éviter `…/v3/aggregation/v3/aggregation/...` (404).
+ */
+function normalizeBridgePaginationPath(uri: string): string {
+  let path = uri.trim();
+  if (path.startsWith('http://') || path.startsWith('https://')) {
+    try {
+      const u = new URL(path);
+      path = u.pathname + u.search;
+    } catch {
+      return uri;
+    }
+  }
+  if (path.startsWith(`${AGGREGATION_PATH_PREFIX}/`)) {
+    return path.slice(AGGREGATION_PATH_PREFIX.length);
+  }
+  if (path === AGGREGATION_PATH_PREFIX) {
+    return '/';
+  }
+  return path;
+}
 
 // --- Types v3 ---
 
@@ -44,7 +148,7 @@ interface BridgeAccount {
   id: number;
   name: string;
   balance: number;
-  status: string; // v3: lowercase strings ("valid", "invalid_creds", etc.)
+  // Note: account status is not always present in v3 responses
   type: string;
   iban?: string;
   currency_code: string;
@@ -59,19 +163,36 @@ interface BridgeTransaction {
   id: number;
   amount: number;
   currency_code: string;
-  description: string;
-  raw_description: string;
   date: string;
-  category: {
+  clean_description?: string;
+  provider_description?: string;
+  description?: string;
+  raw_description?: string;
+  category?: {
     id: number;
     name: string;
   };
-  is_future: boolean;
+  future?: boolean;
+  is_future?: boolean;
   account_id: number;
 }
 
 interface BridgeConnectSession {
-  redirect_url: string;
+  id: string;
+  url: string;
+}
+
+interface BridgeItem {
+  id: number;
+  provider_id: number;
+  status: number;
+  status_code_info?: string;
+  status_code_description?: string;
+  account_types: 'payment' | 'all';
+  last_successful_refresh?: string;
+  last_try_refresh?: string;
+  created_at?: string;
+  authentication_expires_at?: string;
 }
 
 interface BridgePaginatedResponse<T> {
@@ -97,6 +218,18 @@ class BridgeApiService {
         'Client-Secret': BRIDGE_CLIENT_SECRET,
       },
     });
+
+    this.client.interceptors.response.use(
+      (response) => response,
+      (error: AxiosError) => {
+        const cfg = error.config;
+        if (!cfg) {
+          return Promise.reject(error);
+        }
+        const op = cfg.bridgeOperation ?? 'BridgeApiService(requête sans bridgeOperation)';
+        return Promise.reject(buildBridgeErrorFromAxios(op, error));
+      }
+    );
   }
 
   // --- Check if API is configured ---
@@ -117,8 +250,9 @@ class BridgeApiService {
     }
 
     const response = await this.client.post<BridgeUser>(
-      '/v3/aggregation/users',
+      '/users',
       body,
+      { bridgeOperation: 'createUser' }
     );
 
     this.currentUserUuid = response.data.uuid;
@@ -141,12 +275,11 @@ class BridgeApiService {
     } else {
       throw new Error('Provide either userUuid or externalUserId');
     }
-
     const response = await this.client.post<BridgeAuthResponse>(
-      '/v3/aggregation/authorization/token',
+      '/authorization/token',
       body,
+      { bridgeOperation: 'authenticate' }
     );
-
     this.accessToken = response.data.access_token;
     this.tokenExpiry = new Date(response.data.expires_at);
     this.currentUserUuid = response.data.user.uuid;
@@ -177,27 +310,148 @@ class BridgeApiService {
     return this.currentUserUuid;
   }
 
+  setCurrentUserUuid(userUuid: string | null) {
+    this.currentUserUuid = userUuid;
+  }
+
+  /** Infos non sensibles pour l’écran debug (pas de token complet). */
+  getDebugMeta() {
+    return {
+      baseUrl: BRIDGE_API_URL,
+      configured: this.isConfigured(),
+      clientIdSuffix: BRIDGE_CLIENT_ID ? `…${BRIDGE_CLIENT_ID.slice(-6)}` : '(vide)',
+      currentUserUuid: this.currentUserUuid,
+      tokenValid: this.isTokenValid(),
+      tokenExpiresAt: this.tokenExpiry?.toISOString() ?? null,
+    };
+  }
+
+  /**
+   * Une seule requête par ressource (première page) pour le debug — évite de paginer toute la base.
+   */
+  async fetchDebugPipelineSnapshot(userUuid: string): Promise<{
+    ok: boolean;
+    error?: string;
+    tokenExpiresAt: string | null;
+    items: BridgeItem[];
+    accounts: BridgeAccount[];
+    transactionsSample: BridgeTransaction[];
+  }> {
+    try {
+      if (!this.isTokenValid()) {
+        await this.authenticate({ userUuid });
+      }
+      const headers = this.getAuthHeaders();
+      const [itemsRes, accRes, txRes] = await Promise.all([
+        this.client.get<BridgePaginatedResponse<BridgeItem>>('/items', {
+          headers,
+          params: { limit: 10 },
+          bridgeOperation: 'fetchDebugPipelineSnapshot.items',
+        }),
+        this.client.get<BridgePaginatedResponse<BridgeAccount>>('/accounts', {
+          headers,
+          params: { limit: 10 },
+          bridgeOperation: 'fetchDebugPipelineSnapshot.accounts',
+        }),
+        this.client.get<BridgePaginatedResponse<BridgeTransaction>>('/transactions', {
+          headers,
+          params: { limit: 8 },
+          bridgeOperation: 'fetchDebugPipelineSnapshot.transactions',
+        }),
+      ]);
+      return {
+        ok: true,
+        tokenExpiresAt: this.tokenExpiry?.toISOString() ?? null,
+        items: itemsRes.data.resources || [],
+        accounts: accRes.data.resources || [],
+        transactionsSample: txRes.data.resources || [],
+      };
+    } catch (e: any) {
+      const msg =
+        e?.response?.data != null
+          ? JSON.stringify(e.response.data)
+          : e?.message || 'Erreur Bridge';
+      return {
+        ok: false,
+        error: msg,
+        tokenExpiresAt: this.tokenExpiry?.toISOString() ?? null,
+        items: [],
+        accounts: [],
+        transactionsSample: [],
+      };
+    }
+  }
+
+  private async fetchAllPages<T>(operation: string, firstPath: string, options: {
+    headers?: Record<string, string>;
+    params?: Record<string, any>;
+  }): Promise<T[]> {
+    const all: T[] = [];
+    let nextPath: string | null = firstPath;
+    let first = true;
+    let page = 0;
+
+    while (nextPath) {
+      page += 1;
+      const response: { data: BridgePaginatedResponse<T> } = await this.client.get<BridgePaginatedResponse<T>>(
+        nextPath,
+        {
+          ...(first ? options : { headers: options.headers }),
+          bridgeOperation: `${operation}.page${page}`,
+        }
+      );
+      all.push(...(response.data.resources || []));
+      const nextUri: string | undefined | null = response.data.pagination?.next_uri;
+      nextPath = nextUri ? normalizeBridgePaginationPath(nextUri) : null;
+      first = false;
+    }
+
+    return all;
+  }
+
   // --- Connect Session (for user to link their bank) ---
   /**
    * Create a Connect session URL for adding a bank account.
-   * v3: POST /v3/aggregation/connect/sessions/create
+   * v3: POST /v3/aggregation/connect-sessions
    */
   async createConnectSession(options?: {
+    userEmail?: string;
     accountTypes?: 'payment' | 'all';
     providerId?: number;
     callbackUrl?: string;
+    context?: string;
+    countryCode?: string;
+    allowAccountSelection?: boolean;
+    maxSelectableAccounts?: number;
+    // Manage existing item:
+    itemId?: number;
+    forceReauthentication?: boolean;
   }): Promise<string> {
     const body: Record<string, any> = {};
     if (options?.accountTypes) body.account_types = options.accountTypes;
-    if (options?.providerId) body.provider_id = options.providerId;
     if (options?.callbackUrl) body.callback_url = options.callbackUrl;
+    if (options?.context) body.context = options.context;
+    if (options?.countryCode) body.country_code = options.countryCode;
+    if (typeof options?.allowAccountSelection === 'boolean') body.allow_account_selection = options.allowAccountSelection;
+    if (typeof options?.maxSelectableAccounts === 'number') body.max_selectable_accounts = options.maxSelectableAccounts;
+
+    if (typeof options?.itemId === 'number') {
+      body.item_id = options.itemId;
+      if (typeof options?.forceReauthentication === 'boolean') {
+        body.force_reauthentication = options.forceReauthentication;
+      }
+    } else {
+      // Connect new item flow requires a user_email (unless using temporary sync).
+      if (options?.userEmail) body.user_email = options.userEmail;
+      if (typeof options?.providerId === 'number') body.provider_id = options.providerId;
+    }
 
     const response = await this.client.post<BridgeConnectSession>(
-      '/v3/aggregation/connect/sessions/create',
+      '/connect-sessions',
       body,
-      { headers: this.getAuthHeaders() }
+      { headers: this.getAuthHeaders(), bridgeOperation: 'createConnectSession' }
     );
-    return response.data.redirect_url;
+    return response.data.url;
   }
 
   // --- Accounts ---
@@ -205,12 +459,14 @@ class BridgeApiService {
    * Fetch all accounts for the authenticated user.
    * v3: GET /v3/aggregation/accounts
    */
-  async getAccounts(): Promise<BridgeAccount[]> {
-    const response = await this.client.get<BridgePaginatedResponse<BridgeAccount>>(
-      '/v3/aggregation/accounts',
-      { headers: this.getAuthHeaders() }
-    );
-    return response.data.resources;
+  async getAccounts(options?: { itemId?: number; limit?: number }): Promise<BridgeAccount[]> {
+    const params: Record<string, any> = {};
+    if (typeof options?.itemId === 'number') params.item_id = options.itemId;
+    if (typeof options?.limit === 'number') params.limit = options.limit;
+    return this.fetchAllPages<BridgeAccount>('getAccounts', '/accounts', {
+      headers: this.getAuthHeaders(),
+      params,
+    });
   }
 
   /**
@@ -219,8 +475,8 @@ class BridgeApiService {
    */
   async getAccount(accountId: number): Promise<BridgeAccount> {
     const response = await this.client.get<BridgeAccount>(
-      `/v3/aggregation/accounts/${accountId}`,
-      { headers: this.getAuthHeaders() }
+      `/accounts/${accountId}`,
+      { headers: this.getAuthHeaders(), bridgeOperation: 'getAccount' }
     );
     return response.data;
   }
@@ -246,14 +502,10 @@ class BridgeApiService {
     if (options?.maxDate) params.max_date = options.maxDate;
     if (options?.limit) params.limit = options.limit;
 
-    const response = await this.client.get<BridgePaginatedResponse<BridgeTransaction>>(
-      '/v3/aggregation/transactions',
-      {
-        headers: this.getAuthHeaders(),
-        params,
-      }
-    );
-    return response.data.resources;
+    return this.fetchAllPages<BridgeTransaction>('getTransactions', '/transactions', {
+      headers: this.getAuthHeaders(),
+      params,
+    });
   }
 
   // --- Items (bank connections) ---
@@ -261,12 +513,13 @@ class BridgeApiService {
    * List all items (connections) for the authenticated user.
    * v3: GET /v3/aggregation/items
    */
-  async getItems(): Promise<any[]> {
-    const response = await this.client.get<BridgePaginatedResponse<any>>(
-      '/v3/aggregation/items',
-      { headers: this.getAuthHeaders() }
-    );
-    return response.data.resources;
+  async getItems(options?: { limit?: number }): Promise<BridgeItem[]> {
+    const params: Record<string, any> = {};
+    if (typeof options?.limit === 'number') params.limit = options.limit;
+    return this.fetchAllPages<BridgeItem>('getItems', '/items', {
+      headers: this.getAuthHeaders(),
+      params,
+    });
   }
 
   // --- Providers (formerly Banks in v2) ---
@@ -276,7 +529,8 @@ class BridgeApiService {
    */
   async getProviders(): Promise<any[]> {
     const response = await this.client.get<BridgePaginatedResponse<any>>(
-      '/v3/aggregation/providers',
+      '/providers',
+      { bridgeOperation: 'getProviders' }
     );
     return response.data.resources;
   }
@@ -318,4 +572,4 @@ class BridgeApiService {
 }
 
 export const bridgeApi = new BridgeApiService();
-export type { BridgeAccount, BridgeTransaction, BridgeUser };
+export type { BridgeAccount, BridgeTransaction, BridgeUser, BridgeItem };

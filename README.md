@@ -47,9 +47,10 @@ L'app utilise [Bridge by Bankin'](https://bridgeapi.io/) pour la connexion Open 
 3. Éditer le fichier `.env` :
 
 ```env
-BRIDGE_CLIENT_ID=votre_client_id
-BRIDGE_CLIENT_SECRET=votre_client_secret
-BRIDGE_API_URL=https://api.bridgeapi.io/v2
+EXPO_PUBLIC_BRIDGE_CLIENT_ID=votre_client_id
+EXPO_PUBLIC_BRIDGE_CLIENT_SECRET=votre_client_secret
+# IMPORTANT: mettre /v3 (l'app force l'utilisation de v3/aggregation)
+EXPO_PUBLIC_BRIDGE_API_URL=https://api.bridgeapi.io/v3
 ```
 
 4. Relancer l'application
