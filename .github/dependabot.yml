@@ -1,5 +1,51 @@
 version: 2
 updates:
+  # Configuration 1: Failles de sécurité - Groupées en 1 PR
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "02:00"
+      timezone: "Europe/Paris"
+    open-pull-requests-limit: 1
+    pull-request-branch-name:
+      separator: "/"
+    commit-message:
+      prefix: "security(deps):"
+    versioning-strategy: "increase"
+    # Active la détection des failles de sécurité
+    groups:
+      security-fixes:
+        patterns:
+          - "*"
+
+  # Configuration 2: Mises à jour mineures/patches - Groupées en 1 PR
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "02:00"
+      timezone: "Europe/Paris"
+    open-pull-requests-limit: 1
+    pull-request-branch-name:
+      separator: "/"
+    commit-message:
+      prefix: "chore(deps):minor"
+    versioning-strategy: "increase"
+    groups:
+      minor-updates:
+        update-types:
+          - "minor"
+          - "patch"
+        patterns:
+          - "*"
+    # Ignore les maj majeures pour cette config
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
+  # Configuration 3: Mises à jour majeures - Une PR par package
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
@@ -10,13 +56,16 @@ updates:
     pull-request-branch-name:
       separator: "/"
     commit-message:
-      prefix: "chore(deps):"
+      prefix: "chore(deps):major"
     versioning-strategy: "increase"
+    # Ignore tout sauf les maj majeures
     ignore:
       - dependency-name: "*"
         update-types:
-          - "version-update:semver-major"
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
 
+  # Configuration 4: GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
