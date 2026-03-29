@@ -15,22 +15,22 @@ updates:
     groups:
       # Groupe 1 : Mises à jour de sécurité - 1 PR
       security:
-        dependency-type: "all"
+        dependency-type: "production"
         update-types:
-          - "security:patch"
-          - "security:minor"
-          - "security:major"
+          - "patch"
+          - "minor"
+          - "major"
       # Groupe 2 : Mises à jour mineures et patches - 1 PR
       minor-and-patch:
-        dependency-type: "all"
+        dependency-type: "production"
         update-types:
-          - "version-update:semver-minor"
-          - "version-update:semver-patch"
+          - "minor"
+          - "patch"
       # Groupe 3 : Mises à jour majeures - Une PR par package
       major:
-        dependency-type: "all"
+        dependency-type: "production"
         update-types:
-          - "version-update:semver-major"
+          - "major"
 
   # Configuration pour GitHub Actions
   - package-ecosystem: "github-actions"
