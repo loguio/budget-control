@@ -1,71 +1,38 @@
 version: 2
 updates:
-  # Configuration 1: Failles de sécurité - Groupées en 1 PR
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
       interval: "daily"
       time: "02:00"
       timezone: "Europe/Paris"
-    open-pull-requests-limit: 1
     pull-request-branch-name:
       separator: "/"
     commit-message:
-      prefix: "security(deps):"
+      prefix: "chore(deps):"
     versioning-strategy: "increase"
-    # Active la détection des failles de sécurité
+    # Grouper les PRs par type
     groups:
-      security-fixes:
-        patterns:
-          - "*"
-
-  # Configuration 2: Mises à jour mineures/patches - Groupées en 1 PR
-  - package-ecosystem: "npm"
-    directory: "/"
-    schedule:
-      interval: "daily"
-      time: "02:00"
-      timezone: "Europe/Paris"
-    open-pull-requests-limit: 1
-    pull-request-branch-name:
-      separator: "/"
-    commit-message:
-      prefix: "chore(deps):minor"
-    versioning-strategy: "increase"
-    groups:
-      minor-updates:
+      # Groupe 1 : Mises à jour de sécurité - 1 PR
+      security:
+        dependency-type: "all"
         update-types:
-          - "minor"
-          - "patch"
-        patterns:
-          - "*"
-    # Ignore les maj majeures pour cette config
-    ignore:
-      - dependency-name: "*"
-        update-types:
-          - "version-update:semver-major"
-
-  # Configuration 3: Mises à jour majeures - Une PR par package
-  - package-ecosystem: "npm"
-    directory: "/"
-    schedule:
-      interval: "daily"
-      time: "02:00"
-      timezone: "Europe/Paris"
-    open-pull-requests-limit: 10
-    pull-request-branch-name:
-      separator: "/"
-    commit-message:
-      prefix: "chore(deps):major"
-    versioning-strategy: "increase"
-    # Ignore tout sauf les maj majeures
-    ignore:
-      - dependency-name: "*"
+          - "security:patch"
+          - "security:minor"
+          - "security:major"
+      # Groupe 2 : Mises à jour mineures et patches - 1 PR
+      minor-and-patch:
+        dependency-type: "all"
         update-types:
           - "version-update:semver-minor"
           - "version-update:semver-patch"
+      # Groupe 3 : Mises à jour majeures - Une PR par package
+      major:
+        dependency-type: "all"
+        update-types:
+          - "version-update:semver-major"
 
-  # Configuration 4: GitHub Actions
+  # Configuration pour GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
