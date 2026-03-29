@@ -1,48 +1,90 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback } from "react";
 import {
-  View, Text, StyleSheet, ScrollView,
-  RefreshControl, TouchableOpacity, Modal, TextInput, Alert,
-} from 'react-native';
-import { useFocusEffect } from '@react-navigation/native';
-import { Colors, Typography, Spacing, BorderRadius } from '../theme';
-import { getSavingsGoals, upsertSavingsGoal, deleteSavingsGoal } from '../database/db';
-import ProgressRing from '../components/ProgressRing';
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  RefreshControl,
+  TouchableOpacity,
+  Modal,
+  TextInput,
+  Alert,
+  Platform,
+} from "react-native";
+import { useFocusEffect } from "@react-navigation/native";
+import DateTimePicker, {
+  DateTimePickerChangeEvent,
+} from "@react-native-community/datetimepicker";
+import { Colors, Typography, Spacing, BorderRadius } from "../theme";
+import {
+  getSavingsGoals,
+  upsertSavingsGoal,
+  deleteSavingsGoal,
+} from "../database/db";
+import ProgressRing from "../components/ProgressRing";
 
 function uuid(): string {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
     const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
     return v.toString(16);
   });
 }
 
-const GOAL_ICONS = ['🎯', '🏖️', '💻', '🚗', '🏠', '💍', '🎓', '🛡️', '✈️', '📱'];
-const GOAL_COLORS = ['#00CEC9', '#6C5CE7', '#00B894', '#E17055', '#FDCB6E', '#74B9FF', '#DDA0DD', '#55EFC4', '#FAB1A0', '#A29BFE'];
+const GOAL_ICONS = ["🎯", "🏖️", "💻", "🚗", "🏠", "💍", "🎓", "🛡️", "✈️", "📱"];
+const GOAL_COLORS = [
+  "#00CEC9",
+  "#6C5CE7",
+  "#00B894",
+  "#E17055",
+  "#FDCB6E",
+  "#74B9FF",
+  "#DDA0DD",
+  "#55EFC4",
+  "#FAB1A0",
+  "#A29BFE",
+];
 
 export default function GoalsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [goals, setGoals] = useState<any[]>([]);
   const [showModal, setShowModal] = useState(false);
-  const [editName, setEditName] = useState('');
-  const [editTarget, setEditTarget] = useState('');
-  const [editCurrent, setEditCurrent] = useState('');
-  const [editDeadline, setEditDeadline] = useState('');
-  const [selectedIcon, setSelectedIcon] = useState('🎯');
-  const [selectedColor, setSelectedColor] = useState('#00CEC9');
+  const [editName, setEditName] = useState("");
+  const [editTarget, setEditTarget] = useState("");
+  const [editCurrent, setEditCurrent] = useState("");
+  const [editDeadline, setEditDeadline] = useState("");
+  const [selectedIcon, setSelectedIcon] = useState("🎯");
+  const [selectedColor, setSelectedColor] = useState("#00CEC9");
+  const [showDatePicker, setShowDatePicker] = useState<boolean>(false);
+  const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
+
+  const handleDateChange = (
+    event: DateTimePickerChangeEvent,
+    selectedDate: Date,
+  ) => {
+    if (Platform.OS === "android") {
+      setShowDatePicker(false);
+    }
+
+    if (selectedDate) {
+      const formattedDate = selectedDate.toISOString().split("T")[0];
+      setEditDeadline(formattedDate);
+    }
+  };
 
   const loadData = useCallback(async () => {
     try {
       const data = await getSavingsGoals();
       setGoals(data);
     } catch (e) {
-      console.error('Goals load error:', e);
+      console.error("Goals load error:", e);
     }
   }, []);
 
   useFocusEffect(
     useCallback(() => {
       loadData();
-    }, [loadData])
+    }, [loadData]),
   );
 
   const onRefresh = async () => {
@@ -53,18 +95,18 @@ export default function GoalsScreen() {
 
   const handleSaveGoal = async () => {
     if (!editName.trim() || !editTarget.trim()) {
-      Alert.alert('Erreur', 'Veuillez remplir le nom et le montant cible.');
+      Alert.alert("Erreur", "Veuillez remplir le nom et le montant cible.");
       return;
     }
     const target = parseFloat(editTarget);
     const current = parseFloat(editCurrent) || 0;
     if (isNaN(target) || target <= 0) {
-      Alert.alert('Erreur', 'Le montant cible doit être positif.');
+      Alert.alert("Erreur", "Le montant cible doit être positif.");
       return;
     }
 
     await upsertSavingsGoal({
-      id: uuid(),
+      id: editingGoalId || uuid(),
       name: editName.trim(),
       targetAmount: target,
       currentAmount: current,
@@ -78,31 +120,47 @@ export default function GoalsScreen() {
     await loadData();
   };
 
+  const handleGoalChange = (id: string) => () => {
+    const goal = goals.find((g) => g.id === id);
+    if (!goal) return;
+
+    setEditName(goal.name);
+    setEditTarget(goal.targetAmount.toString());
+    setEditCurrent(goal.currentAmount.toString());
+    setEditDeadline(goal.deadline || "");
+    setSelectedIcon(goal.icon);
+    setSelectedColor(goal.color);
+    setEditingGoalId(goal.id);
+    setShowModal(true);
+  };
+
   const handleDelete = (id: string, name: string) => {
     Alert.alert(
-      'Supprimer l\'objectif',
+      "Supprimer l'objectif",
       `Voulez-vous vraiment supprimer "${name}" ?`,
       [
-        { text: 'Annuler', style: 'cancel' },
+        { text: "Annuler", style: "cancel" },
         {
-          text: 'Supprimer',
-          style: 'destructive',
+          text: "Supprimer",
+          style: "destructive",
           onPress: async () => {
             await deleteSavingsGoal(id);
             await loadData();
           },
         },
-      ]
+      ],
     );
   };
 
   const resetForm = () => {
-    setEditName('');
-    setEditTarget('');
-    setEditCurrent('');
-    setEditDeadline('');
-    setSelectedIcon('🎯');
-    setSelectedColor('#00CEC9');
+    setEditName("");
+    setEditTarget("");
+    setEditCurrent("");
+    setEditDeadline("");
+    setSelectedIcon("🎯");
+    setSelectedColor("#00CEC9");
+    setShowDatePicker(false);
+    setEditingGoalId(null);
   };
 
   const getDaysRemaining = (deadline: string) => {
@@ -115,7 +173,13 @@ export default function GoalsScreen() {
     <View style={styles.container}>
       <ScrollView
         contentContainerStyle={styles.content}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={Colors.primary}
+          />
+        }
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.header}>
@@ -131,8 +195,13 @@ export default function GoalsScreen() {
         {/* Goals Grid */}
         <View style={styles.grid}>
           {goals.map((goal) => {
-            const progress = goal.targetAmount > 0 ? goal.currentAmount / goal.targetAmount : 0;
-            const daysLeft = goal.deadline ? getDaysRemaining(goal.deadline) : null;
+            const progress =
+              goal.targetAmount > 0
+                ? goal.currentAmount / goal.targetAmount
+                : 0;
+            const daysLeft = goal.deadline
+              ? getDaysRemaining(goal.deadline)
+              : null;
             const isComplete = goal.currentAmount >= goal.targetAmount;
 
             return (
@@ -141,6 +210,7 @@ export default function GoalsScreen() {
                 style={styles.goalCard}
                 onLongPress={() => handleDelete(goal.id, goal.name)}
                 activeOpacity={0.7}
+                onPress={handleGoalChange(goal.id)}
               >
                 <Text style={styles.goalIcon}>{goal.icon}</Text>
                 <ProgressRing
@@ -150,13 +220,25 @@ export default function GoalsScreen() {
                   color={isComplete ? Colors.success : goal.color}
                   centerText={`${(progress * 100).toFixed(0)}%`}
                 />
-                <Text style={styles.goalName} numberOfLines={1}>{goal.name}</Text>
+                <Text style={styles.goalName} numberOfLines={1}>
+                  {goal.name}
+                </Text>
                 <Text style={styles.goalAmount}>
-                  {goal.currentAmount.toLocaleString('fr-FR')}€ / {goal.targetAmount.toLocaleString('fr-FR')}€
+                  {goal.currentAmount.toLocaleString("fr-FR")}€ /{" "}
+                  {goal.targetAmount.toLocaleString("fr-FR")}€
                 </Text>
                 {daysLeft !== null && (
-                  <Text style={[styles.goalDeadline, daysLeft <= 30 && styles.urgentDeadline]}>
-                    {isComplete ? '✅ Atteint !' : daysLeft > 0 ? `${daysLeft}j restants` : '⏰ Échéance dépassée'}
+                  <Text
+                    style={[
+                      styles.goalDeadline,
+                      daysLeft <= 30 && styles.urgentDeadline,
+                    ]}
+                  >
+                    {isComplete
+                      ? "✅ Atteint !"
+                      : daysLeft > 0
+                        ? `${daysLeft}j restants`
+                        : "⏰ Échéance dépassée"}
                   </Text>
                 )}
                 {isComplete && !daysLeft && (
@@ -193,7 +275,10 @@ export default function GoalsScreen() {
                 {GOAL_ICONS.map((icon) => (
                   <TouchableOpacity
                     key={icon}
-                    style={[styles.iconOption, selectedIcon === icon && styles.iconSelected]}
+                    style={[
+                      styles.iconOption,
+                      selectedIcon === icon && styles.iconSelected,
+                    ]}
                     onPress={() => setSelectedIcon(icon)}
                   >
                     <Text style={styles.iconText}>{icon}</Text>
@@ -207,7 +292,11 @@ export default function GoalsScreen() {
                 {GOAL_COLORS.map((color) => (
                   <TouchableOpacity
                     key={color}
-                    style={[styles.colorOption, { backgroundColor: color }, selectedColor === color && styles.colorSelected]}
+                    style={[
+                      styles.colorOption,
+                      { backgroundColor: color },
+                      selectedColor === color && styles.colorSelected,
+                    ]}
                     onPress={() => setSelectedColor(color)}
                   />
                 ))}
@@ -239,23 +328,43 @@ export default function GoalsScreen() {
                 placeholderTextColor={Colors.textMuted}
                 keyboardType="numeric"
               />
-              <Text style={styles.inputLabel}>Échéance (YYYY-MM-DD, optionnel)</Text>
-              <TextInput
+              <Text style={styles.inputLabel}>
+                Échéance (YYYY-MM-DD, optionnel)
+              </Text>
+              <TouchableOpacity
                 style={styles.input}
-                value={editDeadline}
-                onChangeText={setEditDeadline}
-                placeholder="Ex: 2026-07-01"
-                placeholderTextColor={Colors.textMuted}
-              />
+                onPress={() => setShowDatePicker(true)}
+              >
+                <Text
+                  style={{ color: editDeadline ? "#ffffff" : Colors.textMuted }}
+                >
+                  {editDeadline || "Ex: 2026-07-01"}
+                </Text>
+              </TouchableOpacity>
+
+              {showDatePicker && (
+                <DateTimePicker
+                  value={editDeadline ? new Date(editDeadline) : new Date()}
+                  mode="date"
+                  display="default"
+                  onValueChange={handleDateChange}
+                />
+              )}
 
               <View style={styles.modalButtons}>
                 <TouchableOpacity
                   style={styles.cancelButton}
-                  onPress={() => { setShowModal(false); resetForm(); }}
+                  onPress={() => {
+                    setShowModal(false);
+                    resetForm();
+                  }}
                 >
                   <Text style={styles.cancelButtonText}>Annuler</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.saveButton} onPress={handleSaveGoal}>
+                <TouchableOpacity
+                  style={styles.saveButton}
+                  onPress={handleSaveGoal}
+                >
                   <Text style={styles.saveButtonText}>Créer</Text>
                 </TouchableOpacity>
               </View>
@@ -278,9 +387,9 @@ const styles = StyleSheet.create({
     paddingBottom: Spacing.xxl,
   },
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     marginBottom: Spacing.lg,
   },
   title: {
@@ -293,21 +402,21 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.round,
   },
   addButtonText: {
-    color: '#fff',
-    fontWeight: '600',
+    color: "#fff",
+    fontWeight: "600",
     fontSize: 13,
   },
   grid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
   },
   goalCard: {
     backgroundColor: Colors.card,
     borderRadius: BorderRadius.lg,
     padding: Spacing.md,
-    width: '48%',
-    alignItems: 'center',
+    width: "48%",
+    alignItems: "center",
     marginBottom: Spacing.md,
     borderWidth: 1,
     borderColor: Colors.cardBorder,
@@ -318,16 +427,16 @@ const styles = StyleSheet.create({
   },
   goalName: {
     ...Typography.body,
-    fontWeight: '600',
+    fontWeight: "600",
     marginTop: Spacing.sm,
     fontSize: 14,
-    textAlign: 'center',
+    textAlign: "center",
   },
   goalAmount: {
     ...Typography.bodySmall,
     fontSize: 11,
     marginTop: 4,
-    textAlign: 'center',
+    textAlign: "center",
   },
   goalDeadline: {
     ...Typography.caption,
@@ -345,7 +454,7 @@ const styles = StyleSheet.create({
     fontSize: 10,
   },
   emptyState: {
-    alignItems: 'center',
+    alignItems: "center",
     paddingVertical: Spacing.xxl,
   },
   emptyEmoji: {
@@ -358,12 +467,12 @@ const styles = StyleSheet.create({
   },
   emptyDesc: {
     ...Typography.bodySmall,
-    textAlign: 'center',
+    textAlign: "center",
     paddingHorizontal: Spacing.xl,
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: "rgba(0,0,0,0.7)",
   },
   modalScroll: {
     flex: 1,
@@ -379,7 +488,7 @@ const styles = StyleSheet.create({
   modalTitle: {
     ...Typography.h2,
     marginBottom: Spacing.lg,
-    textAlign: 'center',
+    textAlign: "center",
   },
   inputLabel: {
     ...Typography.label,
@@ -396,8 +505,8 @@ const styles = StyleSheet.create({
     borderColor: Colors.cardBorder,
   },
   iconPicker: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexDirection: "row",
+    flexWrap: "wrap",
     marginBottom: Spacing.md,
     gap: Spacing.sm,
   },
@@ -407,7 +516,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.card,
   },
   iconSelected: {
-    backgroundColor: Colors.primary + '40',
+    backgroundColor: Colors.primary + "40",
     borderWidth: 1,
     borderColor: Colors.primary,
   },
@@ -415,8 +524,8 @@ const styles = StyleSheet.create({
     fontSize: 24,
   },
   colorPicker: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexDirection: "row",
+    flexWrap: "wrap",
     marginBottom: Spacing.md,
     gap: Spacing.sm,
   },
@@ -427,10 +536,10 @@ const styles = StyleSheet.create({
   },
   colorSelected: {
     borderWidth: 3,
-    borderColor: '#fff',
+    borderColor: "#fff",
   },
   modalButtons: {
-    flexDirection: 'row',
+    flexDirection: "row",
     marginTop: Spacing.md,
     gap: Spacing.sm,
   },
@@ -439,21 +548,21 @@ const styles = StyleSheet.create({
     padding: Spacing.md,
     borderRadius: BorderRadius.md,
     backgroundColor: Colors.card,
-    alignItems: 'center',
+    alignItems: "center",
   },
   cancelButtonText: {
     color: Colors.textSecondary,
-    fontWeight: '600',
+    fontWeight: "600",
   },
   saveButton: {
     flex: 1,
     padding: Spacing.md,
     borderRadius: BorderRadius.md,
     backgroundColor: Colors.accent,
-    alignItems: 'center',
+    alignItems: "center",
   },
   saveButtonText: {
-    color: '#fff',
-    fontWeight: '600',
+    color: "#fff",
+    fontWeight: "600",
   },
 });

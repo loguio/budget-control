@@ -1,0 +1,4 @@
+- [ ] cette synchro je voudrais qu'elle se fasse dès qu'on lance l'appli ca me lance le process si besoins de se reconnecter ou autre
+- [x] pour les objectifs, fais en sorte que si on clique dessus on peut le modifier ou le supprimer
+- [x] pour le formulaire de l'objectif pour le champ date met un champ ou on clique sur la date plutot que le texte actuel.
+- [ ] j'aimerais aussi que les mois en terme finance commence au premier lundi apres le 28 inclus du mois (moment moyen ou je recois mon salaire)
